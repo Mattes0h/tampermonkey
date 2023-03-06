@@ -6,13 +6,15 @@
 
 (function() {
 
-Registry.require('helper');
-Registry.require('convert');
-Registry.require('compat');
+var getConverter = function() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "convert.js", false);
+    xhr.send(null);
+    var x = window['eval'](xhr.responseText);
+    return x;
+};
 
-var Converter = Registry.get('convert');
-var Helper = Registry.get('helper');
-var compaMo = Registry.get('compat');
+var Converter = getConverter();
 
 var getScriptId = function(name) {
     var id = null;
@@ -31,8 +33,6 @@ var Script = function() {
     this.icon = null;
     this.icon64 = null;
     this.fileURL = null;
-    this.downloadURL = null;
-    this.updateURL = null;
     this.name = null;
     this.namespace = null;
     this.homepage = null;
@@ -46,10 +46,7 @@ var Script = function() {
     this.excludes = [];
     this.resources = [];
     this.lastUpdated = 0;
-    this.sync = { imported: false },
     this.options = {
-        comment : null,
-        compatopts_for_requires : true,
         compat_metadata : false,
         compat_foreach : false,
         compat_arrayleft : false,
@@ -59,17 +56,39 @@ var Script = function() {
         noframes: false,
         awareOfChrome: false,
         run_at : '',
-        user_agent : '',
-        override: { includes: false, merge_includes: true, use_includes: [], orig_includes: [],
-                    matches : false, merge_matches : true, use_matches : [], orig_matches : [],
-                    excludes: false, merge_excludes: true, use_excludes: [], orig_excludes: [] }
+        override: { includes: false, use_includes: [], orig_includes: [],
+                    matches: false, use_matches: [], orig_matches: [],
+                    excludes: false, use_excludes: [], orig_excludes: [] }
     };
 };
 
-var headerStart = '==UserScript==';
-var headerStop = '==/UserScript==';
-        
-var scriptParser = {
+var escapeForRegExpURL = function(str, more) {
+    if (more == undefined) more = [];
+    var re = new RegExp( '(\\' + [ '/', '.', '+', '?', '|', '(', ')', '[', ']', '{', '}', '\\' ].concat(more).join('|\\') + ')', 'g');
+    return str.replace(re, '\\$1');
+};
+
+var escapeForRegExp = function(str, more) {
+    return escapeForRegExpURL(str, ['*']);
+};
+
+var getStringBetweenTags = function(source, tag1, tag2) {
+    var b = source.search(escapeForRegExp(tag1));
+    if (b == -1) {
+        return "";
+    }
+    if (!tag2) {
+        return source.substr(b + tag1.length);
+    }
+    var e = source.substr(b + tag1.length).search(escapeForRegExp(tag2));
+
+    if (e == -1) {
+        return "";
+    }
+    return source.substr(b + tag1.length, e);
+};
+
+window.scriptParser = window.scriptParser || {
     Script : Script,
     getScriptId : getScriptId,
     processMetaHeader : function(header) {
@@ -84,7 +103,7 @@ var scriptParser = {
         header = header.replace(/\r/gi, '');
 
         for (var t in tags) {
-            meta[tags[t]] = Helper.getStringBetweenTags(header, '@'+tags[t], '\n').trim();
+            meta[tags[t]] = getStringBetweenTags(header, '@'+tags[t], '\n').trim();
         }
 
         if (V || UV) console.log("parser: processMetaHeader -> " + JSON.stringify(meta));
@@ -111,21 +130,17 @@ var scriptParser = {
         header = header.replace(/\n\n+/g, '\n');
         header = header.replace(/[^|\n][ \t]+\/\//g, '//')
 
-        var s, t, i, l, c, o, lines = header.split('\n');
-        for (i in lines) {
-            l = lines[i].replace(/^[\t\s]*\/\//gi, '').replace(/^[\t\s]*/gi, '').replace(/\s\s+/gi, ' ');
-            c = false;
+        for (var t in tags) {
+            script[tags[t]] = getStringBetweenTags(header, '@'+tags[t], '\n').trim();;
+        }
 
-            for (var t in tags) {
-                var r = new RegExp('^@' + tags[t] + '[\\t\\s]');
-                if (l.search(r) != -1) {
-                    script[tags[t]] = Helper.getStringBetweenTags(l, '@'+tags[t]).trim();
-                    continue;
-                }
-            }
+        var lines = header.split('\n');
+        for (var i in lines) {
+            var l = lines[i].replace(/^[\t\s]*\/\//gi, '').replace(/^[\t\s]*/gi, '').replace(/\s\s+/gi, ' ');
+            var c = false;
 
-            for (t in icon64_tags) {
-                s = Helper.getStringBetweenTags(l, '@'+icon64_tags[t]).trim();
+            for (var t in icon64_tags) {
+                var s = getStringBetweenTags(l, '@'+icon64_tags[t]).trim();
                 if (s != '') {
                     script.icon64 = s;
                     c = true;
@@ -134,8 +149,8 @@ var scriptParser = {
             }
             if (c) continue;
 
-            for (t in icon_tags) {
-                s = Helper.getStringBetweenTags(l, '@'+icon_tags[t]).trim();
+            for (var t in icon_tags) {
+                var s = getStringBetweenTags(l, '@'+icon_tags[t]).trim();
                 if (s != '') {
                     script.icon = s;
                     c = true;
@@ -144,8 +159,8 @@ var scriptParser = {
             }
             if (c) continue;
 
-            for (t in homepage_tags) {
-                s = Helper.getStringBetweenTags(l, '@'+homepage_tags[t]).trim();
+            for (var t in homepage_tags) {
+                var s = getStringBetweenTags(l, '@'+homepage_tags[t]).trim();
                 if (s != '') {
                     script.homepage = s;
                     c = true;
@@ -154,61 +169,47 @@ var scriptParser = {
             }
             if (c) continue;
 
-            if (l.search(/^@include[\t\s]/) != -1) {
-                c = l.replace(/^@include/gi, '').trim().replace(/ /gi, '%20').replace(/[\b\r\n]/gi, '');
+            if (l.search(/^@include/) != -1) {
+                var c = l.replace(/^@include/gi, '').trim().replace(/ /gi, '%20').replace(/[\b\r\n]/gi, '');
                 if (V) console.log("c " + c);
                 if (c.trim() != "") script.includes.push(c);
             }
-            if (l.search(/^@match[\t\s]/) != -1) {
-                c = l.replace(/^@match/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
+            if (l.search(/^@match/) != -1) {
+                var c = l.replace(/^@match/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
                 if (V) console.log("c " + c);
                 if (c.trim() != "") script.matches.push(c);
                 script.options.awareOfChrome = true;
             }
-            if (l.search(/^@exclude[\t\s]/) != -1) {
-                c = l.replace(/^@exclude/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
+            if (l.search(/^@exclude/) != -1) {
+                var c = l.replace(/^@exclude/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
                 if (V) console.log("c " + c);
                 if (c.trim() != "") script.excludes.push(c);
             }
-            if (l.search(/^@require[\t\s]/) != -1) {
-                c = l.replace(/^@require/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
+            if (l.search(/^@require/) != -1) {
+                var c = l.replace(/^@require/gi, '').trim().replace(/ /gi, '%20').replace(/[ \b\r\n]/gi, '');
                 if (V) console.log("c " + c);
-                o = { url: c, loaded: false, textContent: ''};
+                var o = { url: c, loaded: false, textContent: ''};
                 if (c.trim() != "") script.requires.push(o);
             }
-            if (l.search(/^@resource[\t\s]/) != -1) {
-                c = l.replace(/^@resource/gi, '').replace(/[\r\n]/gi, '');
-                s = c.trim().split(' ');
+            if (l.search(/^@resource/) != -1) {
+                var c = l.replace(/^@resource/gi, '').replace(/[\r\n]/gi, '');
+                var s = c.trim().split(' ');
                 if (V) console.log("c " + c);
                 if (V) console.log("s " + s);
                 if (s.length >= 2) {
                     script.resources.push({name: s[0], url: s[1], loaded: false});
                 }
             }
-            if (l.search(/^@run-at[\t\s]/) != -1) {
-                c = l.replace(/^@run-at/gi, '').replace(/[ \b\r\n]/gi, '');
+            if (l.search(/^@run-at/) != -1) {
+                var c = l.replace(/^@run-at/gi, '').replace(/[ \b\r\n]/gi, '');
                 if (V) console.log("c " + c);
                 if (c.trim() != "") script.options.run_at = c.trim();
             }
-            if (l.search(/^@user-agent[\t\s]/) != -1) {
-                c = l.replace(/^@user-agent/gi, '').trim().replace(/[\r\n]/gi, '');
-                if (V) console.log("c " + c);
-                if (c.trim() != "") script.options.user_agent = c.trim();
-            }
-            if (l.search(/^@noframes[\t\s\r\n]?/) != -1) {
+            if (l.search(/^@noframes/) != -1) {
                 script.options.noframes = true;
             }
-            if (l.search(/^@nocompat[\t\s\r\n]?/) != -1) {
+            if (l.search(/^@nocompat/) != -1) {
                 script.options.awareOfChrome = true;
-            }
-            
-            if (l.search(/^@updateURL[\t\s]/) != -1) {
-                c = l.replace(/^@updateURL/gi, '').trim().replace(/[ \b\r\n]/gi, '');
-                if (c.trim() != "") script.updateURL = c;
-            }
-            if (l.search(/^@downloadURL[\t\s]/) != -1) {
-                c = l.replace(/^@downloadURL/gi, '').trim().replace(/[ \b\r\n]/gi, '');
-                if (c.trim() != "") script.downloadURL = c;
             }
         }
 
@@ -216,18 +217,16 @@ var scriptParser = {
             script.id = getScriptId(script.name);
             if (D) console.log('parser: script ' + script.name + ' got id ' + script.id);
         }
-        if (!script.version) script.version = "0.0";
+        if (script.version == '') script.version = "0.0";
 
         return script;
     },
 
-    getHeaderTags : function() {
-        return { start: headerStart,
-                 stop: headerStop };
-    },
-
     getHeader : function(src) {
-        var header = Helper.getStringBetweenTags(src, headerStart, headerStop);
+        var t1 = '==UserScript==';
+        var t2 = '==/UserScript==';
+
+        var header = getStringBetweenTags(src, t1, t2);
 
         if (!header || header == '') {
             return null;
@@ -235,7 +234,7 @@ var scriptParser = {
 
         var b1 = '<html>';
         var b2 = '<body>';
-        var p0 = src.search(headerStart);
+        var p0 = src.search(t1);
         var p1 = src.search(b1);
         var p2 = src.search(b2);
 
@@ -249,15 +248,12 @@ var scriptParser = {
     },
     
     createScriptFromSrc : function(src) {
-        // there still seem to be some mac users outside...
-        src = src.replace(/\r/g, '\n');
-        src = src.replace(/\n\n/g, '\n');
         // save some space ;)
         src = src.replace(/\r/g, '');
 
-        var header = scriptParser.getHeader(src);
+        var header = window.scriptParser.getHeader(src);
         if (!header) return {};
-        var script = scriptParser.processHeader(header);
+        var script = window.scriptParser.processHeader(header);
 
         script.textContent = src;
         script.header = header;
@@ -281,5 +277,4 @@ var scriptParser = {
     }
 };
 
-Registry.register('parser', scriptParser);
 })();
